@@ -1,2 +1,2 @@
 # VFlow
-Implementation and refinement of Glow
+Implementation and refinement of Glow in Pytorch
