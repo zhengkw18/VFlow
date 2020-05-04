@@ -22,7 +22,7 @@ from tqdm import tqdm
 def main(args):
     # Set up main device and scale batch size
     device = 'cuda' if torch.cuda.is_available() and args.gpu_ids else 'cpu'
-    args.batch_size *= max(1, len(args.gpu_ids))
+    # args.batch_size *= max(1, len(args.gpu_ids))
 
     # Set random seeds
     random.seed(args.seed)
@@ -48,13 +48,11 @@ def main(args):
 
     # Model
     print('Building model..')
-    net = Glow(num_channels=args.num_channels,
-               num_levels=args.num_levels,
-               num_steps=args.num_steps)
-    net = net.to(device)
+    net = Glow(num_channels=args.num_channels, num_levels=args.num_levels, num_steps=args.num_steps, num_augmentation=args.num_augmentation)
     if device == 'cuda':
         net = torch.nn.DataParallel(net, args.gpu_ids)
         cudnn.benchmark = args.benchmark
+    net = net.to(device)
 
     start_epoch = 0
     if args.resume:
@@ -75,18 +73,21 @@ def main(args):
 
     for epoch in range(start_epoch, start_epoch + args.num_epochs):
         train(epoch, net, trainloader, device, optimizer, scheduler,
-              loss_fn, args.max_grad_norm)
-        test(epoch, net, testloader, device, loss_fn, args.num_samples)
+              loss_fn, args.max_grad_norm, args.num_augmentation)
+        test(epoch, net, testloader, device, loss_fn, args.num_samples, args.num_augmentation)
 
 
 @torch.enable_grad()
-def train(epoch, net, trainloader, device, optimizer, scheduler, loss_fn, max_grad_norm):
+def train(epoch, net, trainloader, device, optimizer, scheduler, loss_fn, max_grad_norm, num_augmentation):
     global global_step
     print('\nEpoch: %d' % epoch)
     net.train()
     loss_meter = util.AverageMeter()
     with tqdm(total=len(trainloader.dataset)) as progress_bar:
         for x, _ in trainloader:
+            augmentation = torch.randn((x.size(0), num_augmentation, x.size(2), x.size(3)), dtype=torch.float32, device=device)
+            augmentation = torch.sigmoid(augmentation)
+            x = torch.cat((x, augmentation), dim=1)
             x = x.to(device)
             optimizer.zero_grad()
             z, sldj = net(x, reverse=False)
@@ -106,7 +107,7 @@ def train(epoch, net, trainloader, device, optimizer, scheduler, loss_fn, max_gr
 
 
 @torch.no_grad()
-def sample(net, batch_size, device):
+def sample(net, batch_size, device, num_augmentation):
     """Sample from RealNVP model.
 
     Args:
@@ -114,7 +115,7 @@ def sample(net, batch_size, device):
         batch_size (int): Number of samples to generate.
         device (torch.device): Device to use.
     """
-    z = torch.randn((batch_size, 3, 32, 32), dtype=torch.float32, device=device)
+    z = torch.randn((batch_size, 3 + num_augmentation, 32, 32), dtype=torch.float32, device=device)
     x, _ = net(z, reverse=True)
     x = torch.sigmoid(x)
 
@@ -122,7 +123,7 @@ def sample(net, batch_size, device):
 
 
 @torch.no_grad()
-def test(epoch, net, testloader, device, loss_fn, num_samples):
+def test(epoch, net, testloader, device, loss_fn, num_samples, num_augmentation):
     global best_loss
     net.eval()
     loss_meter = util.AverageMeter()
@@ -149,14 +150,16 @@ def test(epoch, net, testloader, device, loss_fn, num_samples):
         best_loss = loss_meter.avg
 
     # Save samples and data
-    images = sample(net, num_samples, device)
+    images = sample(net, num_samples, device, num_augmentation)[:, 0:3, :, :]
     os.makedirs('samples', exist_ok=True)
-    images_concat = torchvision.utils.make_grid(images, nrow=int(num_samples ** 0.5), padding=2, pad_value=255)
-    torchvision.utils.save_image(images_concat, 'samples/epoch_{}.png'.format(epoch))
+    images_concat = torchvision.utils.make_grid(
+        images, nrow=int(num_samples ** 0.5), padding=2, pad_value=255)
+    torchvision.utils.save_image(
+        images_concat, 'samples/epoch_{}.png'.format(epoch))
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Glow on CIFAR-10')
+    parser = argparse.ArgumentParser(description='VFlow on CIFAR-10')
 
     def str2bool(s):
         return s.lower().startswith('t')
@@ -165,7 +168,7 @@ if __name__ == '__main__':
     parser.add_argument('--benchmark', type=str2bool, default=True, help='Turn on CUDNN benchmarking')
     parser.add_argument('--gpu_ids', default=[0], type=eval, help='IDs of GPUs to use')
     parser.add_argument('--lr', default=1e-3, type=float, help='Learning rate')
-    parser.add_argument('--max_grad_norm', type=float, default=-1., help='Max gradient norm for clipping')
+    parser.add_argument('--max_grad_norm', type=float, default=1., help='Max gradient norm for clipping')
     parser.add_argument('--num_channels', '-C', default=512, type=int, help='Number of channels in hidden layers')
     parser.add_argument('--num_levels', '-L', default=3, type=int, help='Number of levels in the Glow model')
     parser.add_argument('--num_steps', '-K', default=32, type=int, help='Number of steps of flow in each level')
@@ -175,6 +178,7 @@ if __name__ == '__main__':
     parser.add_argument('--resume', type=str2bool, default=False, help='Resume from checkpoint')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--warm_up', default=500000, type=int, help='Number of steps for lr warm-up')
+    parser.add_argument('--num_augmentation', default=3, type=int, help='Number of augmented dimensions')
 
     best_loss = 0
     global_step = 0

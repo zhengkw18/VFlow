@@ -13,6 +13,7 @@ class ActNorm(nn.Module):
     Adapted from:
         > https://github.com/openai/glow
     """
+
     def __init__(self, num_features, scale=1., return_ldj=False):
         super(ActNorm, self).__init__()
         self.register_buffer('is_initialized', torch.zeros(1))

@@ -17,6 +17,7 @@ class Coupling(nn.Module):
         mid_channels (int): Number of channels in the intermediate activation
             in NN.
     """
+
     def __init__(self, in_channels, mid_channels):
         super(Coupling, self).__init__()
         self.nn = NN(in_channels, mid_channels, 2 * in_channels)
@@ -51,6 +52,7 @@ class NN(nn.Module):
         out_channels (int): Number of channels in the output.
         use_act_norm (bool): Use activation norm rather than batch norm.
     """
+
     def __init__(self, in_channels, mid_channels, out_channels,
                  use_act_norm=False):
         super(NN, self).__init__()
