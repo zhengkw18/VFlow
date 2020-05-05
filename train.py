@@ -23,6 +23,7 @@ def main(args):
     # Set up main device and scale batch size
     device = 'cuda' if torch.cuda.is_available() and args.gpu_ids else 'cpu'
     # args.batch_size *= max(1, len(args.gpu_ids))
+    print("Device:", device)
 
     # Set random seeds
     random.seed(args.seed)
@@ -52,7 +53,8 @@ def main(args):
     if device == 'cuda':
         net = torch.nn.DataParallel(net, args.gpu_ids)
         cudnn.benchmark = args.benchmark
-    net = net.to(device)
+        print("Using", len(args.gpu_ids), "GPUs")
+    net.to(device)
 
     start_epoch = 0
     if args.resume:
@@ -129,6 +131,9 @@ def test(epoch, net, testloader, device, loss_fn, num_samples, num_augmentation)
     loss_meter = util.AverageMeter()
     with tqdm(total=len(testloader.dataset)) as progress_bar:
         for x, _ in testloader:
+            augmentation = torch.randn((x.size(0), num_augmentation, x.size(2), x.size(3)), dtype=torch.float32, device=device)
+            augmentation = torch.sigmoid(augmentation)
+            x = torch.cat((x, augmentation), dim=1)
             x = x.to(device)
             z, sldj = net(x, reverse=False)
             loss = loss_fn(z, sldj)
