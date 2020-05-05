@@ -1,2 +1,2 @@
 # VFlow
-Implementation and refinement of Glow in Pytorch
+Generative flows using variational data augmentation in pytorch
