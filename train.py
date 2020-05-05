@@ -22,7 +22,7 @@ from tqdm import tqdm
 def main(args):
     # Set up main device and scale batch size
     device = 'cuda' if torch.cuda.is_available() and args.gpu_ids else 'cpu'
-    # args.batch_size *= max(1, len(args.gpu_ids))
+    args.batch_size *= max(1, len(args.gpu_ids))
     print("Device:", device)
 
     # Set random seeds
@@ -89,11 +89,11 @@ def train(epoch, net, trainloader, device, optimizer, scheduler, loss_fn, max_gr
         for x, _ in trainloader:
             augmentation = torch.randn((x.size(0), num_augmentation, x.size(2), x.size(3)), dtype=torch.float32, device=device)
             augmentation = torch.sigmoid(augmentation)
-            x = torch.cat((x, augmentation), dim=1)
             x = x.to(device)
+            x = torch.cat((x, augmentation), dim=1)
             optimizer.zero_grad()
             z, sldj = net(x, reverse=False)
-            loss = loss_fn(z, sldj)
+            loss = loss_fn(z, sldj, x)
             loss_meter.update(loss.item(), x.size(0))
             loss.backward()
             if max_grad_norm > 0:
@@ -133,10 +133,10 @@ def test(epoch, net, testloader, device, loss_fn, num_samples, num_augmentation)
         for x, _ in testloader:
             augmentation = torch.randn((x.size(0), num_augmentation, x.size(2), x.size(3)), dtype=torch.float32, device=device)
             augmentation = torch.sigmoid(augmentation)
-            x = torch.cat((x, augmentation), dim=1)
             x = x.to(device)
+            x = torch.cat((x, augmentation), dim=1)
             z, sldj = net(x, reverse=False)
-            loss = loss_fn(z, sldj)
+            loss = loss_fn(z, sldj, x)
             loss_meter.update(loss.item(), x.size(0))
             progress_bar.set_postfix(nll=loss_meter.avg,
                                      bpd=util.bits_per_dim(x, loss_meter.avg))

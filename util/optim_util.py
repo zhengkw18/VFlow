@@ -14,6 +14,7 @@ def bits_per_dim(x, nll):
     Returns:
         bpd (torch.Tensor): Bits per dimension implied if compressing `x`.
     """
+    x = x[:, 0:3, :, :]
     dim = np.prod(x.size()[1:])
     bpd = nll / (np.log(2) * dim)
 
@@ -47,10 +48,13 @@ class NLLLoss(nn.Module):
         super(NLLLoss, self).__init__()
         self.k = k
 
-    def forward(self, z, sldj):
+    def forward(self, z, sldj, x):
         prior_ll = -0.5 * (z ** 2 + np.log(2 * np.pi))
         prior_ll = prior_ll.flatten(1).sum(-1) - np.log(self.k) * np.prod(z.size()[1:])
-        ll = prior_ll + sldj
+        zz = x[:, 3:, :, :]
+        q_z = -0.5 * (zz ** 2 + np.log(2 * np.pi))
+        q_z = q_z.flatten(1).sum(-1)
+        ll = prior_ll + sldj - q_z
         nll = -ll.mean()
 
         return nll
