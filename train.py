@@ -20,8 +20,9 @@ from tqdm import tqdm
 
 
 def main(args):
+    global img_shape
     # Set up main device and scale batch size
-    device = 'cuda' if torch.cuda.is_available() and args.gpu_ids else 'cpu'
+    device = ('cuda:' + str(args.gpu_ids[0])) if torch.cuda.is_available() and args.gpu_ids else 'cpu'
     args.batch_size *= max(1, len(args.gpu_ids))
     print("Device:", device)
 
@@ -47,9 +48,10 @@ def main(args):
     testset = torchvision.datasets.CIFAR10(root='data', train=False, download=True, transform=transform_test)
     testloader = data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
+    img_shape = (args.batch_size, 3, 32, 32)
     # Model
     print('Building model..')
-    net = Glow(num_channels=args.num_channels, num_levels=args.num_levels, num_steps=args.num_steps, num_augmentation=args.num_augmentation)
+    net = Glow(img_shape=img_shape, num_channels=args.num_channels, num_levels=args.num_levels, num_steps=args.num_steps)
     if device == 'cuda':
         net = torch.nn.DataParallel(net, args.gpu_ids)
         cudnn.benchmark = args.benchmark
@@ -57,59 +59,55 @@ def main(args):
     net.to(device)
 
     start_epoch = 0
-    if args.resume:
+    if args.resume and os.path.isdir('ckpts'):
         # Load checkpoint.
         print('Resuming from checkpoint at ckpts/best.pth.tar...')
         assert os.path.isdir('ckpts'), 'Error: no checkpoint directory found!'
         checkpoint = torch.load('ckpts/best.pth.tar')
         net.load_state_dict(checkpoint['net'])
         global best_loss
-        global global_step
+        global training_step
         best_loss = checkpoint['test_loss']
-        start_epoch = checkpoint['epoch']
-        global_step = start_epoch * len(trainset)
+        start_epoch = checkpoint['epoch'] + 1
+        training_step = start_epoch * len(trainset)
 
     loss_fn = util.NLLLoss().to(device)
     optimizer = optim.Adam(net.parameters(), lr=args.lr)
-    scheduler = sched.LambdaLR(optimizer, lambda s: min(1., s / args.warm_up))
+    scheduler1 = sched.LambdaLR(optimizer, lambda s: min(1., s / args.warm_up))
 
     for epoch in range(start_epoch, start_epoch + args.num_epochs):
-        train(epoch, net, trainloader, device, optimizer, scheduler,
-              loss_fn, args.max_grad_norm, args.num_augmentation)
-        test(epoch, net, testloader, device, loss_fn, args.num_samples, args.num_augmentation)
+        train(epoch, net, trainloader, device, optimizer, scheduler1, loss_fn, args.max_grad_norm)
+        test(epoch, net, testloader, device, loss_fn, args.num_samples)
 
 
 @torch.enable_grad()
-def train(epoch, net, trainloader, device, optimizer, scheduler, loss_fn, max_grad_norm, num_augmentation):
-    global global_step
+def train(epoch, net, trainloader, device, optimizer, scheduler1, loss_fn, max_grad_norm):
+    global training_step
+    global img_shape
     print('\nEpoch: %d' % epoch)
     net.train()
     loss_meter = util.AverageMeter()
     with tqdm(total=len(trainloader.dataset)) as progress_bar:
         for x, _ in trainloader:
-            augmentation = torch.randn((x.size(0), num_augmentation, x.size(2), x.size(3)), dtype=torch.float32, device=device)
-            augmentation = torch.sigmoid(augmentation)
             x = x.to(device)
-            x = torch.cat((x, augmentation), dim=1)
             optimizer.zero_grad()
-            z, sldj = net(x, reverse=False)
-            loss = loss_fn(z, sldj, x)
+            _, sldj = net(x, reverse=False)
+            loss = loss_fn(img_shape, sldj)
             loss_meter.update(loss.item(), x.size(0))
             loss.backward()
             if max_grad_norm > 0:
                 util.clip_grad_norm(optimizer, max_grad_norm)
             optimizer.step()
-            scheduler.step(global_step)
-
+            scheduler1.step(training_step)
             progress_bar.set_postfix(nll=loss_meter.avg,
-                                     bpd=util.bits_per_dim(x, loss_meter.avg),
+                                     bpd=util.bits_per_dim(img_shape, loss_meter.avg),
                                      lr=optimizer.param_groups[0]['lr'])
             progress_bar.update(x.size(0))
-            global_step += x.size(0)
+            training_step += x.size(0)
 
 
 @torch.no_grad()
-def sample(net, batch_size, device, num_augmentation):
+def sample(net, batch_size, device, testloader):
     """Sample from RealNVP model.
 
     Args:
@@ -117,29 +115,30 @@ def sample(net, batch_size, device, num_augmentation):
         batch_size (int): Number of samples to generate.
         device (torch.device): Device to use.
     """
-    z = torch.randn((batch_size, 3 + num_augmentation, 32, 32), dtype=torch.float32, device=device)
-    x, _ = net(z, reverse=True)
+    for x, _ in testloader:
+        x = x.to(device)
+        x, _ = net(x, reverse=True)
+        x = x[0:batch_size, :, :, :]
+        break
     x = torch.sigmoid(x)
 
     return x
 
 
 @torch.no_grad()
-def test(epoch, net, testloader, device, loss_fn, num_samples, num_augmentation):
+def test(epoch, net, testloader, device, loss_fn, num_samples):
     global best_loss
+    global img_shape
     net.eval()
     loss_meter = util.AverageMeter()
     with tqdm(total=len(testloader.dataset)) as progress_bar:
         for x, _ in testloader:
-            augmentation = torch.randn((x.size(0), num_augmentation, x.size(2), x.size(3)), dtype=torch.float32, device=device)
-            augmentation = torch.sigmoid(augmentation)
             x = x.to(device)
-            x = torch.cat((x, augmentation), dim=1)
-            z, sldj = net(x, reverse=False)
-            loss = loss_fn(z, sldj, x)
+            _, sldj = net(x, reverse=False)
+            loss = loss_fn(img_shape, sldj)
             loss_meter.update(loss.item(), x.size(0))
             progress_bar.set_postfix(nll=loss_meter.avg,
-                                     bpd=util.bits_per_dim(x, loss_meter.avg))
+                                     bpd=util.bits_per_dim(img_shape, loss_meter.avg))
             progress_bar.update(x.size(0))
 
     # Save checkpoint
@@ -155,12 +154,10 @@ def test(epoch, net, testloader, device, loss_fn, num_samples, num_augmentation)
         best_loss = loss_meter.avg
 
     # Save samples and data
-    images = sample(net, num_samples, device, num_augmentation)[:, 0:3, :, :]
+    images = sample(net, num_samples, device, testloader)
     os.makedirs('samples', exist_ok=True)
-    images_concat = torchvision.utils.make_grid(
-        images, nrow=int(num_samples ** 0.5), padding=2, pad_value=255)
-    torchvision.utils.save_image(
-        images_concat, 'samples/epoch_{}.png'.format(epoch))
+    images_concat = torchvision.utils.make_grid(images, nrow=int(num_samples ** 0.5), padding=2, pad_value=255)
+    torchvision.utils.save_image(images_concat, 'samples/epoch_{}.png'.format(epoch))
 
 
 if __name__ == '__main__':
@@ -172,20 +169,19 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', default=64, type=int, help='Batch size per GPU')
     parser.add_argument('--benchmark', type=str2bool, default=True, help='Turn on CUDNN benchmarking')
     parser.add_argument('--gpu_ids', default=[0], type=eval, help='IDs of GPUs to use')
-    parser.add_argument('--lr', default=1e-3, type=float, help='Learning rate')
+    parser.add_argument('--lr', default=1.2e-3, type=float, help='Learning rate')
     parser.add_argument('--max_grad_norm', type=float, default=1., help='Max gradient norm for clipping')
-    parser.add_argument('--num_channels', '-C', default=512, type=int, help='Number of channels in hidden layers')
+    parser.add_argument('--num_channels', '-C', default=96, type=int, help='Number of channels in hidden layers')
     parser.add_argument('--num_levels', '-L', default=3, type=int, help='Number of levels in the Glow model')
-    parser.add_argument('--num_steps', '-K', default=32, type=int, help='Number of steps of flow in each level')
+    parser.add_argument('--num_steps', '-K', default=10, type=int, help='Number of steps of flow in each level')
     parser.add_argument('--num_epochs', default=100, type=int, help='Number of epochs to train')
     parser.add_argument('--num_samples', default=64, type=int, help='Number of samples at test time')
     parser.add_argument('--num_workers', default=8, type=int, help='Number of data loader threads')
-    parser.add_argument('--resume', type=str2bool, default=False, help='Resume from checkpoint')
+    parser.add_argument('--resume', type=str2bool, default=True, help='Resume from checkpoint')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--warm_up', default=500000, type=int, help='Number of steps for lr warm-up')
-    parser.add_argument('--num_augmentation', default=3, type=int, help='Number of augmented dimensions')
 
-    best_loss = 0
-    global_step = 0
-
+    best_loss = 1e8
+    training_step = 0
+    img_shape = (0, 0, 0, 0)
     main(parser.parse_args())

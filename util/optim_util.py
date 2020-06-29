@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.utils as utils
 
 
-def bits_per_dim(x, nll):
+def bits_per_dim(img_shape, nll):
     """Get the bits per dimension implied by using model with `loss`
     for compressing `x`, assuming each entry can take on `k` discrete values.
 
@@ -14,8 +14,7 @@ def bits_per_dim(x, nll):
     Returns:
         bpd (torch.Tensor): Bits per dimension implied if compressing `x`.
     """
-    x = x[:, 0:3, :, :]
-    dim = np.prod(x.size()[1:])
+    dim = np.prod(img_shape[1:])
     bpd = nll / (np.log(2) * dim)
 
     return bpd
@@ -48,13 +47,9 @@ class NLLLoss(nn.Module):
         super(NLLLoss, self).__init__()
         self.k = k
 
-    def forward(self, z, sldj, x):
-        prior_ll = -0.5 * (z ** 2 + np.log(2 * np.pi))
-        prior_ll = prior_ll.flatten(1).sum(-1) - np.log(self.k) * np.prod(z.size()[1:])
-        zz = x[:, 3:, :, :]
-        q_z = -0.5 * (zz ** 2 + np.log(2 * np.pi))
-        q_z = q_z.flatten(1).sum(-1)
-        ll = prior_ll + sldj - q_z
+    def forward(self, img_shape, sldj):
+        ll = sldj - np.log(self.k) * np.prod(img_shape[1:])
+
         nll = -ll.mean()
 
         return nll
