@@ -181,8 +181,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume', type=str2bool, default=True, help='Resume from checkpoint')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--warm_up', default=2000, type=int, help='Number of steps for lr warm-up')
-    parser.add_argument('--decay_rate', default=0.99999, type=int, help='Decay rate for lr')
-    parser.add_argument('--decay_step', default=30000, type=int, help='Number of steps before lr decay')
+    parser.add_argument('--decay_rate', default=0.999, type=int, help='Decay rate for lr')
+    parser.add_argument('--decay_step', default=3000, type=int, help='Number of steps before lr decay')
 
     best_loss = 1e8
     training_step = 0
