@@ -22,9 +22,12 @@ from tqdm import tqdm
 def main(args):
     global img_shape
     # Set up main device and scale batch size
-    device = ('cuda:' + str(args.gpu_ids[0])) if torch.cuda.is_available() and args.gpu_ids else 'cpu'
+    # device = ('cuda:' + str(args.gpu_ids[0])) if torch.cuda.is_available() and args.gpu_ids else 'cpu'
+    torch.cuda.set_device(args.gpu_ids[0])
     args.batch_size *= max(1, len(args.gpu_ids))
-    print("Device:", device)
+    args.lr *= args.batch_size / 64
+    args.warm_up /= args.batch_size / 64
+    args.decay_step /= args.batch_size / 64
 
     # Set random seeds
     random.seed(args.seed)
@@ -52,11 +55,9 @@ def main(args):
     # Model
     print('Building model..')
     net = Glow(img_shape=img_shape, num_channels=args.num_channels, num_levels=args.num_levels, num_steps=args.num_steps)
-    if device == 'cuda':
-        net = torch.nn.DataParallel(net, args.gpu_ids)
-        cudnn.benchmark = args.benchmark
-        print("Using", len(args.gpu_ids), "GPUs")
-    net.to(device)
+    net = torch.nn.DataParallel(net.cuda(), device_ids=args.gpu_ids)
+    cudnn.benchmark = args.benchmark
+    print("Using", len(args.gpu_ids), "GPUs")
 
     start_epoch = 0
     if args.resume and os.path.isdir('ckpts'):
@@ -71,17 +72,17 @@ def main(args):
         start_epoch = checkpoint['epoch'] + 1
         training_step = start_epoch * len(trainset)
 
-    loss_fn = util.NLLLoss().to(device)
+    loss_fn = util.NLLLoss().cuda()
     optimizer = optim.Adam(net.parameters(), lr=args.lr)
-    scheduler1 = sched.LambdaLR(optimizer, lambda s: min(1., s / args.warm_up))
+    scheduler1 = sched.LambdaLR(optimizer, lambda s: min(min(1., s / args.warm_up), max(args.decay_rate**(s - args.decay_step), 0.25)))
 
     for epoch in range(start_epoch, start_epoch + args.num_epochs):
-        train(epoch, net, trainloader, device, optimizer, scheduler1, loss_fn, args.max_grad_norm)
-        test(epoch, net, testloader, device, loss_fn, args.num_samples)
+        train(epoch, net, trainloader, optimizer, scheduler1, loss_fn, args.max_grad_norm)
+        test(epoch, net, testloader, loss_fn, args.num_samples)
 
 
 @torch.enable_grad()
-def train(epoch, net, trainloader, device, optimizer, scheduler1, loss_fn, max_grad_norm):
+def train(epoch, net, trainloader, optimizer, scheduler1, loss_fn, max_grad_norm):
     global training_step
     global img_shape
     print('\nEpoch: %d' % epoch)
@@ -89,7 +90,7 @@ def train(epoch, net, trainloader, device, optimizer, scheduler1, loss_fn, max_g
     loss_meter = util.AverageMeter()
     with tqdm(total=len(trainloader.dataset)) as progress_bar:
         for x, _ in trainloader:
-            x = x.to(device)
+            x = x.cuda(non_blocking=True)
             optimizer.zero_grad()
             _, sldj = net(x, reverse=False)
             loss = loss_fn(img_shape, sldj)
@@ -103,11 +104,11 @@ def train(epoch, net, trainloader, device, optimizer, scheduler1, loss_fn, max_g
                                      bpd=util.bits_per_dim(img_shape, loss_meter.avg),
                                      lr=optimizer.param_groups[0]['lr'])
             progress_bar.update(x.size(0))
-            training_step += x.size(0)
+            training_step += 1
 
 
 @torch.no_grad()
-def sample(net, batch_size, device, testloader):
+def sample(net, batch_size, testloader):
     """Sample from RealNVP model.
 
     Args:
@@ -116,7 +117,7 @@ def sample(net, batch_size, device, testloader):
         device (torch.device): Device to use.
     """
     for x, _ in testloader:
-        x = x.to(device)
+        x = x.cuda(non_blocking=True)
         x, _ = net(x, reverse=True)
         x = x[0:batch_size, :, :, :]
         break
@@ -126,14 +127,14 @@ def sample(net, batch_size, device, testloader):
 
 
 @torch.no_grad()
-def test(epoch, net, testloader, device, loss_fn, num_samples):
+def test(epoch, net, testloader, loss_fn, num_samples):
     global best_loss
     global img_shape
     net.eval()
     loss_meter = util.AverageMeter()
     with tqdm(total=len(testloader.dataset)) as progress_bar:
         for x, _ in testloader:
-            x = x.to(device)
+            x = x.cuda(non_blocking=True)
             _, sldj = net(x, reverse=False)
             loss = loss_fn(img_shape, sldj)
             loss_meter.update(loss.item(), x.size(0))
@@ -154,7 +155,7 @@ def test(epoch, net, testloader, device, loss_fn, num_samples):
         best_loss = loss_meter.avg
 
     # Save samples and data
-    images = sample(net, num_samples, device, testloader)
+    images = sample(net, num_samples, testloader)
     os.makedirs('samples', exist_ok=True)
     images_concat = torchvision.utils.make_grid(images, nrow=int(num_samples ** 0.5), padding=2, pad_value=255)
     torchvision.utils.save_image(images_concat, 'samples/epoch_{}.png'.format(epoch))
@@ -166,7 +167,7 @@ if __name__ == '__main__':
     def str2bool(s):
         return s.lower().startswith('t')
 
-    parser.add_argument('--batch_size', default=64, type=int, help='Batch size per GPU')
+    parser.add_argument('--batch_size', default=192, type=int, help='Batch size per GPU')
     parser.add_argument('--benchmark', type=str2bool, default=True, help='Turn on CUDNN benchmarking')
     parser.add_argument('--gpu_ids', default=[0], type=eval, help='IDs of GPUs to use')
     parser.add_argument('--lr', default=1.2e-3, type=float, help='Learning rate')
@@ -179,7 +180,9 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', default=8, type=int, help='Number of data loader threads')
     parser.add_argument('--resume', type=str2bool, default=True, help='Resume from checkpoint')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
-    parser.add_argument('--warm_up', default=500000, type=int, help='Number of steps for lr warm-up')
+    parser.add_argument('--warm_up', default=2000, type=int, help='Number of steps for lr warm-up')
+    parser.add_argument('--decay_rate', default=0.99999, type=int, help='Decay rate for lr')
+    parser.add_argument('--decay_step', default=30000, type=int, help='Number of steps before lr decay')
 
     best_loss = 1e8
     training_step = 0

@@ -209,7 +209,7 @@ class Coupling(nn.Module):
 
         st = self.nn(x_id)
         shift, scale = st[:, 0::2, ...], st[:, 1::2, ...]
-        scale = torch.sigmoid(scale.add(2.))
+        scale = torch.sigmoid(scale)
         # Scale and translate
         if reverse:
             x_change = x_change / scale - shift
@@ -285,60 +285,30 @@ class NN(nn.Module):
         return x
 
 
-class GatedConv(nn.Module):
+class GatedConvConditional(nn.Module):
     def __init__(self, channels):
-        super(GatedConv, self).__init__()
-        self.conv1 = Conv2d(channels * 2, channels)
-        self.conv2 = Conv2d(channels * 2, channels * 2)
-
-    def forward(self, x):
-        y = nonlinearity(x)
-        y = self.conv1(y)
-        y = nonlinearity(y)
-        y = self.conv2(y)
-        return x + gate(y)
-
-
-class GatedConvPrior(nn.Module):
-    def __init__(self, channels):
-        super(GatedConvPrior, self).__init__()
+        super(GatedConvConditional, self).__init__()
         self.conv = Conv2d(channels * 2, channels)
-        self.linear1 = Linear(channels * 2, channels * 2)
-        self.linear2 = Linear(channels * 2, channels * 2)
+        self.conv1 = Conv2d(channels * 2, channels * 2)
+        self.conv2 = Conv2d(channels * 2, channels * 2)
 
     def forward(self, x, a):
         y = nonlinearity(x)
         y = self.conv(y)
         y = nonlinearity(y)
-        y = self.linear1(y)
+        y = self.conv1(y)
         a = nonlinearity(a)
-        a = self.linear2(a)
+        a = self.conv2(a)
         return x + gate(y + a)
 
 
-class ShallowProcesser(nn.Module):
-    def __init__(self, channels, mid_channels):
-        super(ShallowProcesser, self).__init__()
-        self.conv = Conv2d(channels, mid_channels)
-        self.gate1 = GatedConv(mid_channels)
-        self.gate2 = GatedConv(mid_channels)
-        self.gate3 = GatedConv(mid_channels)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.gate1(x)
-        x = self.gate2(x)
-        x = self.gate3(x)
-        return x
-
-
-class AffineCouplingPrior(nn.Module):
+class AffineCouplingConditional(nn.Module):
     def __init__(self, in_channels, mid_channels, width, height):
-        super(AffineCouplingPrior, self).__init__()
+        super(AffineCouplingConditional, self).__init__()
         self.conv_in = Conv2d(in_channels, mid_channels)
-        self.gated_conv = GatedConvPrior(mid_channels)
+        self.gated_conv = GatedConvConditional(mid_channels)
         self.layernorm = nn.LayerNorm([mid_channels, width, height])
-        self.conv_out = Conv2d(mid_channels, in_channels * 2)
+        self.conv_out = Conv2dZeros(mid_channels, in_channels * 2)
 
     def forward(self, x, a, ldj, reverse=False):
         x_change, x_id = x.chunk(2, dim=1)
@@ -348,7 +318,7 @@ class AffineCouplingPrior(nn.Module):
         st = self.layernorm(st)
         st = self.conv_out(st)
         shift, scale = st[:, 0::2, ...], st[:, 1::2, ...]
-        scale = torch.sigmoid(scale.add(2.))
+        scale = torch.sigmoid(scale)
         # Scale and translate
         if reverse:
             x_change = x_change / scale - shift

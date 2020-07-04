@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.glow.modules import ActNorm, Coupling, InvConv, GaussianDiagLogp, Split2d, AffineCouplingPrior, ShallowProcesser, Sigmoid
+from models.glow.modules import ActNorm, Coupling, InvConv, GaussianDiagLogp, Split2d, AffineCouplingConditional, NN, Sigmoid
 
 
 class Glow(nn.Module):
@@ -35,7 +35,7 @@ class Glow(nn.Module):
 
     def forward(self, x, reverse=False):
         if reverse:
-            sldj = torch.zeros(self.B, device=x.device)
+            sldj = torch.zeros(self.B).cuda()
         else:
             # Expect inputs in [0, 1]
             if x.min() < 0 or x.max() > 1:
@@ -187,7 +187,7 @@ class AugmentStep(nn.Module):
         self.B, self.C, self.W, self.H = shape
         self.norm = ActNorm(self.C, return_ldj=True)
         self.conv = InvConv(self.C)
-        self.coup = AffineCouplingPrior(self.C // 2, mid_channels, self.W, self.H)
+        self.coup = AffineCouplingConditional(self.C // 2, mid_channels, self.W, self.H)
 
     def forward(self, x, a, sldj):
         x, sldj = self.norm(x, sldj)
@@ -201,7 +201,7 @@ class Augment(nn.Module):
         super(Augment, self).__init__()
         self.B, self.C, self.W, self.H = shape
         self.diaglogp = GaussianDiagLogp()
-        self.shallow = ShallowProcesser(self.C * 4, mid_channels)
+        self.shallow = NN(self.C * 4, mid_channels, mid_channels)
         self.step1 = AugmentStep((self.B, self.C * 4, self.W // 2, self.H // 2), mid_channels)
         self.step2 = AugmentStep((self.B, self.C * 4, self.W // 2, self.H // 2), mid_channels)
         self.step3 = AugmentStep((self.B, self.C * 4, self.W // 2, self.H // 2), mid_channels)
